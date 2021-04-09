@@ -108,7 +108,7 @@ func (n *Node) NodesCount() int {
 
 func (n *Node) String() string {
 	var b strings.Builder
-	NewPrinting(WithWriter(&b), WithSeparator(" ")).RunNode(n)
+	NewPrinting(WithWriter(&b), WithColSep(" ")).RunNode(n)
 	return b.String()
 }
 
@@ -224,7 +224,7 @@ func (r *Row) FmtArgs() []interface{} {
 
 func (r *Row) String() string {
 	var b strings.Builder
-	NewPrinting(WithWriter(&b), WithSeparator(" "), WithoutLf()).RunRow(r)
+	NewPrinting(WithWriter(&b), WithColSep(" "), WithLineBrk("")).RunRow(r)
 	return b.String()
 }
 
@@ -432,20 +432,19 @@ func MatchCmp(a interface{}) CmpFn {
 }
 
 type Printing struct {
-	w   io.Writer
-	lf  string
-	sep string
+	writer    io.Writer
+	colSep    string
+	colSepLen int
+	lineBrk   string
 }
 
 func (p *Printing) RunNode(n *Node) {
 	if n == nil {
 		return
 	}
-
 	if n.IsNotRoot() {
 		p.RunRow(n.Row())
 	}
-
 	n.Walk(func(n *Node) {
 		p.RunRow(n.Row())
 	})
@@ -458,31 +457,35 @@ func (p *Printing) RunRow(r *Row) {
 
 	str := ""
 	r.EachFmtStr(func(s string) {
-		str += p.sep
+		str += p.colSep
 		str += s
 	})
+
 	if str == "" {
 		return
-	} else if p.sep != "" {
-		str = str[len(p.sep):]
 	}
 
-	if p.lf != "" {
-		str += p.lf
+	if p.colSepLen > 0 {
+		str = str[p.colSepLen:]
+	}
+	if p.lineBrk != "" {
+		str += p.lineBrk
 	}
 
-	fmt.Fprintf(p.w, str, r.FmtArgs()...)
+	fmt.Fprintf(p.writer, str, r.FmtArgs()...)
 }
 
 func NewPrinting(opts ...PrintingOpt) *Printing {
 	p := &Printing{
-		w:   os.Stdout,
-		lf:  "\n",
-		sep: " ",
+		writer:  os.Stdout,
+		colSep:  " ",
+		lineBrk: "\n",
 	}
 	for _, opt := range opts {
 		opt(p)
 	}
+	p.colSepLen = len(p.colSep)
+
 	return p
 }
 
@@ -492,20 +495,20 @@ func Print(n *Node, opts ...PrintingOpt) {
 
 type PrintingOpt func(*Printing)
 
-func WithSeparator(sep string) PrintingOpt {
+func WithColSep(sep string) PrintingOpt {
 	return func(p *Printing) {
-		p.sep = sep
+		p.colSep = sep
+	}
+}
+
+func WithLineBrk(brk string) PrintingOpt {
+	return func(p *Printing) {
+		p.lineBrk = brk
 	}
 }
 
 func WithWriter(w io.Writer) PrintingOpt {
 	return func(p *Printing) {
-		p.w = w
-	}
-}
-
-func WithoutLf() PrintingOpt {
-	return func(p *Printing) {
-		p.lf = ""
+		p.writer = w
 	}
 }

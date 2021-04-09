@@ -103,12 +103,12 @@ func TestPrintingRunRow(t *testing.T) {
 	assert.Equal(t, "1 hello  123.1 <nil>\n", s.String())
 
 	s.Reset()
-	p = NewPrinting(WithWriter(&s), WithSeparator(""))
+	p = NewPrinting(WithWriter(&s), WithColSep(""))
 	p.RunRow(NewRow(WithData(1, "hello", nil, 123.1, (*string)(nil))))
 	assert.Equal(t, "1hello123.1<nil>\n", s.String())
 
 	s.Reset()
-	p = NewPrinting(WithWriter(&s), WithSeparator("##"), WithoutLf())
+	p = NewPrinting(WithWriter(&s), WithColSep("##"), WithLineBrk(""))
 	p.RunRow(NewRow(WithData(1, "hello", nil, 123.1, (*string)(nil))))
 	assert.Equal(t, "1##hello####123.1##<nil>", s.String())
 }
