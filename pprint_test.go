@@ -152,67 +152,6 @@ func TestRowString(t *testing.T) {
 	assert.Equal(t, "    width0 width0left -10   no problem", r.String())
 }
 
-func TestCreateNodeItemAdapter(t *testing.T) {
-	adpt, err := CreateNodeItemAdapter(nil, 0)
-	assert.Equal(t, NodeItemAdapter{}, adpt)
-	assert.EqualError(t, err, "CreateNodeItemAdapter: empty node or index over range")
-
-	adpt, err = CreateNodeItemAdapter(NewNode(), 0)
-	assert.Equal(t, NodeItemAdapter{}, adpt)
-	assert.EqualError(t, err, "CreateNodeItemAdapter: empty node or index over range")
-
-	n := NewNode()
-	n.Push("hello")
-	adpt, err = CreateNodeItemAdapter(n, 0)
-	assert.NoError(t, err)
-	assert.Equal(t, interface{}("hello"), adpt.Item(0))
-	assert.Equal(t, nil, adpt.Item(1))
-
-	adpt, err = CreateNodeItemAdapter(n, 1)
-	assert.Equal(t, NodeItemAdapter{}, adpt)
-	assert.EqualError(t, err, "CreateNodeItemAdapter: empty node or index over range")
-}
-
-func TestSorting(t *testing.T) {
-	items := testSortItems([]uint{0, 1, 5, 55, 1, 7, 9, 100, 20})
-	s := NewSorting()
-	err := s.Run(items)
-	assert.EqualError(t, err, "Sorting.Run: don't know how to sort: 0")
-
-	s = NewSorting(
-		WithCmpDetects(func(a interface{}) SortCmp {
-			return func(a, b interface{}) bool { return a.(uint) < b.(uint) }
-		}),
-	)
-	err = s.Run(items)
-	assert.NoError(t, err)
-	assert.Equal(t, []uint{0, 1, 1, 5, 7, 9, 20, 55, 100}, []uint(items))
-
-	s = NewSorting(
-		WithCmpDetects(
-			func(a interface{}) SortCmp {
-				return func(a, b interface{}) bool { return a.(uint) < b.(uint) }
-			},
-			func(a interface{}) SortCmp {
-				return nil
-			},
-		),
-	)
-	err = s.Run(items)
-	assert.NoError(t, err)
-	assert.Equal(t, []uint{0, 1, 1, 5, 7, 9, 20, 55, 100}, []uint(items))
-
-	s = NewSorting(
-		WithDescending(),
-		WithCmpDetects(func(a interface{}) SortCmp {
-			return func(a, b interface{}) bool { return a.(uint) < b.(uint) }
-		}),
-	)
-	err = s.Run(items)
-	assert.NoError(t, err)
-	assert.Equal(t, []uint{100, 55, 20, 9, 7, 5, 1, 1, 0}, []uint(items))
-}
-
 func TestNodeSort(t *testing.T) {
 	n := NewNode()
 	err := n.Sort(1)
@@ -227,7 +166,7 @@ func TestNodeSort(t *testing.T) {
 	n.Push(0, 1)
 	n.Push(0)
 	err = n.Sort(1)
-	assert.EqualError(t, err, "Sort: not same type")
+	assert.EqualError(t, err, "createSortableOn: column 1 doesn't contain identical value type")
 
 	var (
 		pt = func(date string) time.Time {
@@ -312,10 +251,10 @@ func TestNodeSort(t *testing.T) {
 	)
 
 	err = n.Sort(3)
-	assert.EqualError(t, err, "Sort: not same type")
+	assert.EqualError(t, err, "createSortableOn: column 3 doesn't contain identical value type")
 
 	res = [][]interface{}{}
-	n.Sort(0, WithCmpDetects(func(a interface{}) SortCmp {
+	n.Sort(0, WithCmpMatchers(func(a interface{}) CmpFn {
 		return func(a, b interface{}) bool { return a.(int) > b.(int) }
 	}))
 	n.Walk(collect)

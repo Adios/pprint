@@ -11,9 +11,15 @@ import (
 	"time"
 )
 
+type nodes []*Node
+
+func (n nodes) cell(col, row int) interface{} {
+	return n[row].Row().fields[col]
+}
+
 type Node struct {
+	nodes
 	parent *Node
-	nodes  []*Node
 	schema *ColumnSchema
 	row    *Row
 }
@@ -62,7 +68,7 @@ func (n *Node) PushNode(incoming *Node) (modified *Node, err error) {
 
 }
 
-func (n *Node) Sort(col int, opts ...SortingOpt) error {
+func (n *Node) Sort(col int, opts ...SortOpt) error {
 	if n.schema == nil || col < 0 || col >= n.schema.count {
 		return fmt.Errorf("Sort: no such field")
 	}
@@ -70,19 +76,13 @@ func (n *Node) Sort(col int, opts ...SortingOpt) error {
 		return nil
 	}
 
-	cell := func(row int) interface{} {
-		return n.nodes[row].row.fields[col]
+	nodes, err := createSortableOn(col, []*Node(n.nodes), opts...)
+	if err != nil {
+		return err
 	}
 
-	for i, j := 0, 1; j < n.NodesCount(); i, j = i+1, j+1 {
-		if reflect.TypeOf(cell(i)) != reflect.TypeOf(cell(j)) {
-			return fmt.Errorf("Sort: not same type")
-		}
-	}
-
-	adpt, _ := CreateNodeItemAdapter(n, col)
-
-	return NewSorting(opts...).Run(adpt)
+	sort.Stable(nodes)
+	return nil
 }
 
 func (n *Node) Row() *Row {
@@ -141,33 +141,6 @@ func WithRow(r *Row) NodeOpt {
 	return func(n *Node) {
 		n.row = r
 	}
-}
-
-type NodeItemAdapter struct {
-	nodes  []*Node
-	column int
-}
-
-func (adpt NodeItemAdapter) Items() interface{} {
-	return interface{}(adpt.nodes)
-}
-
-func (adpt NodeItemAdapter) Item(row int) interface{} {
-	if row < 0 || row >= len(adpt.nodes) {
-		return nil
-	}
-	return adpt.nodes[row].row.fields[adpt.column]
-}
-
-func CreateNodeItemAdapter(n *Node, col int) (NodeItemAdapter, error) {
-	if n == nil || n.schema == nil || col < 0 || col >= n.schema.count {
-		return NodeItemAdapter{}, fmt.Errorf("CreateNodeItemAdapter: empty node or index over range")
-	}
-	adpt := NodeItemAdapter{
-		nodes:  n.nodes,
-		column: col,
-	}
-	return adpt, nil
 }
 
 type Column struct {
@@ -310,66 +283,152 @@ func WithData(a ...interface{}) RowOpt {
 	}
 }
 
-type SortItems interface {
-	Items() interface{}
-	Item(i int) interface{}
-}
-type SortCmp func(a, b interface{}) bool
+// Converts anything to a string.
+// The function itself handles the common types including: fmt.Stringer, string, []byte, uint, int and nil.
+// It passes anything else to the fmt.Sprintf to get the string representation of that value.
+func MustToString(a interface{}) string {
+	var s string
 
-type Sorting struct {
-	cmps [](func(interface{}) SortCmp)
-	desc bool
-}
-
-func (s *Sorting) Run(data SortItems) error {
-	cmp := s.runCmpChain(data.Item(0))
-	if cmp == nil {
-		return fmt.Errorf("Sorting.Run: don't know how to sort: %v", data.Item(0))
+	switch v := a.(type) {
+	case fmt.Stringer:
+		s = v.String()
+	case string:
+		s = v
+	case []byte:
+		s = string(v)
+	case uint:
+		s = strconv.FormatUint(uint64(v), 10)
+	case int:
+		s = strconv.FormatInt(int64(v), 10)
+	case nil:
+	default:
+		s = fmt.Sprintf("%v", v)
 	}
 
-	var less func(i, j int) bool
-	if s.desc {
-		less = func(i, j int) bool { return !cmp(data.Item(i), data.Item(j)) }
-	} else {
-		less = func(i, j int) bool { return cmp(data.Item(i), data.Item(j)) }
-	}
-
-	sort.SliceStable(data.Items(), less)
-
-	return nil
+	return s
 }
 
-func (s *Sorting) runCmpChain(a interface{}) SortCmp {
-	for i := len(s.cmps) - 1; i >= 0; i-- {
-		cmp := s.cmps[i](a)
-		if cmp != nil {
-			return cmp
-		}
-	}
-	return nil
-}
-
-func NewSorting(opts ...SortingOpt) *Sorting {
-	s := &Sorting{}
-	s.cmps = append(s.cmps, DetectCmp)
-	for _, opt := range opts {
-		opt(s)
+func resizeSlice(s []interface{}, become int) []interface{} {
+	switch cur := len(s); {
+	case cur == become:
+	case cur < become:
+		s = append(s, make([]interface{}, become-cur)...)
+	case cur > become:
+		s = s[0:become]
 	}
 	return s
 }
 
-type SortingOpt func(*Sorting)
+type CmpFn func(a, b interface{}) bool
+type lessFn func(i, j int) bool
+type sortable struct {
+	nodes
+	col   int
+	count int
+	desc  bool
+	less  func(i, j int) bool
+	chain []func(a interface{}) CmpFn
+}
 
-func WithDescending() SortingOpt {
-	return func(s *Sorting) {
+func (s *sortable) matchComparator(a interface{}) (cmp CmpFn, ok bool) {
+	for _, matcher := range s.chain {
+		cmp := matcher(a)
+		if cmp != nil {
+			return cmp, true
+		}
+	}
+	return nil, false
+}
+
+func (s *sortable) holdsIdenticalType() bool {
+	switch {
+	case s.count < 2:
+	case s.count >= 2:
+		for i, j := 0, 1; j < s.count; i, j = i+1, j+1 {
+			if reflect.TypeOf(s.cell(i)) != reflect.TypeOf(s.cell(j)) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (s *sortable) toLess(cmp CmpFn) lessFn {
+	if s.desc {
+		return func(i, j int) bool { return !cmp(s.cell(i), s.cell(j)) }
+	} else {
+		return func(i, j int) bool { return cmp(s.cell(i), s.cell(j)) }
+	}
+}
+
+func (s *sortable) cell(row int) interface{} {
+	return s.nodes.cell(s.col, row)
+}
+
+func (s *sortable) Len() int {
+	return s.count
+}
+
+func (s *sortable) Swap(i, j int) {
+	s.nodes[j], s.nodes[i] = s.nodes[i], s.nodes[j]
+}
+
+func (s *sortable) Less(i, j int) bool {
+	return s.less(i, j)
+}
+
+func createSortableOn(column int, ns []*Node, opts ...SortOpt) (*sortable, error) {
+	s := &sortable{
+		nodes: nodes(ns),
+		col:   column,
+		count: len(ns),
+		less:  func(i, j int) bool { return true },
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	s.chain = append(s.chain, MatchCmp)
+
+	if s.count > 0 {
+		if !s.holdsIdenticalType() {
+			return nil, fmt.Errorf("createSortableOn: column %d doesn't contain identical value type", column)
+		}
+
+		cmp, ok := s.matchComparator(s.cell(0))
+		if !ok {
+			return nil, fmt.Errorf("createSortableOn: don't know how to sort %s", reflect.TypeOf(s.cell(0)))
+		}
+		s.less = s.toLess(cmp)
+	}
+
+	return s, nil
+}
+
+type SortOpt func(*sortable)
+
+func WithDescending() SortOpt {
+	return func(s *sortable) {
 		s.desc = true
 	}
 }
 
-func WithCmpDetects(cmps ...func(interface{}) SortCmp) SortingOpt {
-	return func(s *Sorting) {
-		s.cmps = append(s.cmps, cmps...)
+func WithCmpMatchers(m ...func(interface{}) CmpFn) SortOpt {
+	return func(s *sortable) {
+		s.chain = append(s.chain, m...)
 	}
+}
+
+func MatchCmp(a interface{}) CmpFn {
+	var out CmpFn
+	switch a.(type) {
+	case string:
+		out = func(a, b interface{}) bool { return a.(string) < b.(string) }
+	case int:
+		out = func(a, b interface{}) bool { return a.(int) < b.(int) }
+	case time.Time:
+		out = func(a, b interface{}) bool { return a.(time.Time).Before(b.(time.Time)) }
+	}
+	return out
 }
 
 type Printing struct {
@@ -449,55 +508,4 @@ func WithoutLf() PrintingOpt {
 	return func(p *Printing) {
 		p.lf = ""
 	}
-}
-
-func DetectCmp(a interface{}) SortCmp {
-	var out SortCmp
-
-	switch a.(type) {
-	case string:
-		out = func(a, b interface{}) bool { return a.(string) < b.(string) }
-	case int:
-		out = func(a, b interface{}) bool { return a.(int) < b.(int) }
-	case time.Time:
-		out = func(a, b interface{}) bool { return a.(time.Time).Before(b.(time.Time)) }
-	}
-
-	return out
-}
-
-func resizeSlice(s []interface{}, become int) []interface{} {
-	switch cur := len(s); {
-	case cur == become:
-	case cur < become:
-		s = append(s, make([]interface{}, become-cur)...)
-	case cur > become:
-		s = s[0:become]
-	}
-	return s
-}
-
-// Converts anything to a string.
-// The function itself handles the common types including: fmt.Stringer, string, []byte, uint, int and nil.
-// It passes anything else to the fmt.Sprintf to get the string representation of that value.
-func MustToString(a interface{}) string {
-	var s string
-
-	switch v := a.(type) {
-	case fmt.Stringer:
-		s = v.String()
-	case string:
-		s = v
-	case []byte:
-		s = string(v)
-	case uint:
-		s = strconv.FormatUint(uint64(v), 10)
-	case int:
-		s = strconv.FormatInt(int64(v), 10)
-	case nil:
-	default:
-		s = fmt.Sprintf("%v", v)
-	}
-
-	return s
 }
