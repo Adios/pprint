@@ -22,17 +22,16 @@ func TestMustToString(t *testing.T) {
 			in  interface{}
 			out string
 		}{
-			"nil to be empty":       {nil, ""},
-			"empty to empty":        {"", ""},
-			"int to string":         {-10, "-10"},
-			"normal string":         {"string", "string"},
-			"struct to be %#v":      {struct{}{}, "{}"},
-			"ptr to be %#v":         {(*string)(nil), "<nil>"},
-			"time without Stringer": {tm, "1989-12-27 00:00:00 +0000 UTC"},
-			"time with Stringer":    {fmtTime(tm), "Dec 27 1989"},
+			"nil -> empty str": {nil, ""},
+			"empty str":        {"", ""},
+			"int":              {-10, "-10"},
+			"string":           {"string", "string"},
+			"struct -> %v":     {struct{}{}, "{}"},
+			"ptr -> %v":        {(*string)(nil), "<nil>"},
+			"time":             {tm, "1989-12-27 00:00:00 +0000 UTC"},
+			"time + Stringer":  {fmtTime(tm), "Dec 27 1989"},
 		}
 	)
-
 	for name, test := range tests {
 		assert.Equal(t, test.out, MustToString(test.in), name)
 	}
@@ -45,12 +44,11 @@ func TestColumn(t *testing.T) {
 		colArgs  opts
 		expected string
 	}{
-		"nil column":       {opts{}, "%0s"},
-		"negative width":   {opts{WithWidth(-20)}, "%0s"},
-		"normal width":     {opts{WithWidth(20)}, "%20s"},
-		"padding to right": {opts{WithWidth(20), WithLeftAlignment()}, "%-20s"},
+		"nil -> empty str": {opts{}, "%0s"},
+		"fixed < 0":        {opts{WithWidth(-20)}, "%0s"},
+		"fixed width":      {opts{WithWidth(20)}, "%20s"},
+		"pad right":        {opts{WithWidth(20), WithLeftAlignment()}, "%-20s"},
 	}
-
 	for name, test := range tests {
 		assert.Equal(t, test.expected, NewColumn(test.colArgs...).String(), name)
 	}
@@ -59,38 +57,29 @@ func TestColumn(t *testing.T) {
 func TestRowSchema(t *testing.T) {
 	tests := map[string]struct {
 		in       *Row
-		expected interface{}
+		expected *ColumnSchema
 	}{
-		"nil row has 0 input schema":  {NewRow(), NewSchemaFrom([]interface{}{})},
-		"nil data has 0 input schema": {NewRow(WithData()), NewSchemaFrom([]interface{}{})},
-		"nil fields to be empty str": {
-			NewRow(WithData(nil, -10, "")),
-			NewRow(WithData("", 123, "")),
+		"empty row has 0 schema": {NewRow(), NewSchemaFrom([]interface{}{})},
+		"no data -> empty row":   {NewRow(WithRowData()), NewSchemaFrom([]interface{}{})},
+		"nil input -> empty str": {
+			NewRow(WithRowData(nil, -10, "")),
+			NewRow(WithRowData("", 123, "")).Schema(),
 		},
-		"normal %1s schema": {
-			NewRow(WithData(0, 0, 0)),
-			NewRow(WithData("1", "1", "1")),
+		"%1s case": {
+			NewRow(WithRowData(0, 0, 0)),
+			NewRow(WithRowData("1", "1", "1")).Schema(),
 		},
-		"3 fields to be cut to 2 columns": {
-			NewRow(WithColumns(NewColumn(), NewColumn()), WithData(0, 0, 0)),
-			NewRow(WithData("1", "1")),
+		"enforce 2 columns": {
+			NewRow(WithRowColumns(NewColumn(), NewColumn()), WithRowData(0, 0, 0)),
+			NewRow(WithRowData("1", "1")).Schema(),
 		},
-		"2 fields to be expanded to 3 columns": {
-			NewRow(WithColumns(NewColumn(), NewColumn(), NewColumn()), WithData(0, 0)),
-			NewRow(WithData("1", "1", "")),
+		"enforce 3 columns": {
+			NewRow(WithRowColumns(NewColumn(), NewColumn(), NewColumn()), WithRowData(0, 0)),
+			NewRow(WithRowData("1", "1", "")).Schema(),
 		},
 	}
 	for name, test := range tests {
-		var scm *ColumnSchema
-
-		switch v := test.expected.(type) {
-		case *ColumnSchema:
-			scm = v
-		case *Row:
-			scm = v.Schema()
-		}
-
-		assert.Equal(t, scm, test.in.Schema(), name)
+		assert.Equal(t, test.expected, test.in.Schema(), name)
 	}
 }
 
@@ -102,11 +91,11 @@ func TestRowFmtArgs(t *testing.T) {
 		in       *Row
 		expected anys
 	}{
-		"nil data row returns empty slice":                {NewRow(), anys{}},
-		"no data but have one column means lacks a field": {NewRow(WithColumns(NewColumn())), anys{""}},
-		"general case": {
+		"empty row -> unit slice":                 {NewRow(), anys{}},
+		"enforce 1 column & no data -> empty str": {NewRow(WithRowColumns(NewColumn())), anys{""}},
+		"various data types": {
 			NewRow(
-				WithData(
+				WithRowData(
 					nil,
 					struct{}{},
 					-10,
@@ -119,17 +108,17 @@ func TestRowFmtArgs(t *testing.T) {
 			),
 			anys{"", "{}", "-10", "", "<nil>", "no problem", "1989-12-27 00:00:00 +0000 UTC", "Dec 27 1989"},
 		},
-		"lacks a field": {
+		"enforce 3 columns": {
 			NewRow(
-				WithColumns(NewColumn(), NewColumn(), NewColumn()),
-				WithData(nil, -10),
+				WithRowColumns(NewColumn(), NewColumn(), NewColumn()),
+				WithRowData(nil, -10),
 			),
 			anys{"", "-10", ""},
 		},
-		"overs a field": {
+		"enforce 2 columns": {
 			NewRow(
-				WithColumns(NewColumn(), NewColumn()),
-				WithData(nil, -10, ""),
+				WithRowColumns(NewColumn(), NewColumn()),
+				WithRowData(nil, -10, ""),
 			),
 			anys{"", "-10"},
 		},
@@ -141,14 +130,14 @@ func TestRowFmtArgs(t *testing.T) {
 }
 
 func TestRowEachFmtStr(t *testing.T) {
-	wontIterates := map[string]*Row{
-		"nil data row":                            NewRow(),
-		"nil input data row":                      NewRow(WithData()),
-		"nil input for row column":                NewRow(WithColumns()),
-		"nil input for both row columns and data": NewRow(WithColumns(), WithData()),
-		"nil data input":                          NewRow(WithColumns(), WithData(nil, nil, nil)),
+	wontIterate := map[string]*Row{
+		"empty row":                      NewRow(),
+		"row with empty data":            NewRow(WithRowData()),
+		"row with empty column":          NewRow(WithRowColumns()),
+		"row with empty data & column":   NewRow(WithRowColumns(), WithRowData()),
+		"row with empty column but data": NewRow(WithRowColumns(), WithRowData(nil, nil, nil)),
 	}
-	for name, test := range wontIterates {
+	for name, test := range wontIterate {
 		test.EachFmtStr(func(s string) { panic(name) })
 	}
 
@@ -156,24 +145,24 @@ func TestRowEachFmtStr(t *testing.T) {
 		in       *Row
 		expected []string
 	}{
-		"auto schema": {
-			NewRow(WithData(nil, -10, "")),
+		"default auto-width": {
+			NewRow(WithRowData(nil, -10, "")),
 			[]string{"%0s", "%3s", "%0s"},
 		},
-		"initial predefined schema": {
-			NewRow(WithColumns(NewColumn(), NewColumn(), NewColumn())),
+		"enforce 3 columns & no data": {
+			NewRow(WithRowColumns(NewColumn(), NewColumn(), NewColumn())),
 			[]string{"%0s", "%0s", "%0s"},
 		},
-		"normal case": {
-			NewRow(WithColumns(NewColumn(), NewColumn(), NewColumn()), WithData(nil, -10, "")),
+		"enforce 3 columns & 3 data": {
+			NewRow(WithRowColumns(NewColumn(), NewColumn(), NewColumn()), WithRowData(nil, -10, "")),
 			[]string{"%0s", "%3s", "%0s"},
 		},
-		"lacks a field": {
-			NewRow(WithColumns(NewColumn(), NewColumn(), NewColumn()), WithData(nil, -10)),
+		"enforce 2 columns": {
+			NewRow(WithRowColumns(NewColumn(), NewColumn(), NewColumn()), WithRowData(nil, -10)),
 			[]string{"%0s", "%3s", "%0s"},
 		},
-		"overs a field": {
-			NewRow(WithColumns(NewColumn(), NewColumn()), WithData(nil, -10, "")),
+		"enforce 3 columns": {
+			NewRow(WithRowColumns(NewColumn(), NewColumn()), WithRowData(nil, -10, "")),
 			[]string{"%0s", "%3s"},
 		},
 	}
@@ -191,30 +180,31 @@ func TestRowEachFmtStrWithSchemaInheritance(t *testing.T) {
 	assert := assert.New(t)
 
 	a := NewRow(
-		WithColumns(
+		WithRowColumns(
 			NewColumn(WithWidth(5)),
 			NewColumn(WithWidth(5), WithLeftAlignment()),
 			NewColumn(WithLeftAlignment()),
 			NewColumn(),
 		),
-		WithData("123456", "123456", "123456", "123456"),
+		WithRowData("123456", "123456", "123456", "123456"),
 	)
 
-	before, i := []string{"%5s", "%-5s", "%-6s", "%6s"}, 0
+	current, i := []string{"%5s", "%-5s", "%-6s", "%6s"}, 0
 	a.EachFmtStr(func(s string) {
-		assert.Equal(before[i], s, "real width and fixed width")
+		assert.Equal(current[i], s)
 		i = i + 1
 	})
 
+	// B inherits A
 	b := NewRow(
-		WithSchema(a.Schema()),
-		WithData("1234567890", "1234567890", "1234567890", "1234567890"),
+		WithRowSchema(a.Schema()),
+		WithRowData("1234567890", "1234567890", "1234567890", "1234567890"),
 	)
-	assert.Same(b.Schema(), a.Schema(), "same instance")
+	assert.Same(b.Schema(), a.Schema())
 
-	after, i := []string{"%5s", "%-5s", "%-10s", "%10s"}, 0
+	afterInherited, i := []string{"%5s", "%-5s", "%-10s", "%10s"}, 0
 	a.EachFmtStr(func(s string) {
-		assert.Equal(after[i], s, "update b will update a's schema for auto width columns")
+		assert.Equal(afterInherited[i], s, "B should update A's FmtStr")
 		i = i + 1
 	})
 }
@@ -260,154 +250,216 @@ func TestNodeWalk(t *testing.T) {
 	o, _ := a.Push()
 	p, _ := a.Push()
 
-	anotherRoot := NewNode(WithRow(NewRow(WithSchema(root.Schema()))))
+	order, i := []*Node{a, o, p, b, c}, 0
+	root.Walk(func(c *Node) {
+		assert.Same(order[i], c)
+		i += 1
+	})
+
+	// Merge another tree
+	anotherRoot := NewNode(WithSchema(root.Schema()))
 	x, _ := anotherRoot.Push()
 	y, _ := anotherRoot.Push()
 
 	root.PushNode(anotherRoot)
 
-	order, i := []*Node{a, o, p, b, c, anotherRoot, x, y}, 0
+	merged, i := []*Node{a, o, p, b, c, anotherRoot, x, y}, 0
 	root.Walk(func(c *Node) {
-		assert.Same(order[i], c, "follow the order with a merged subtree")
+		assert.Same(merged[i], c)
 		i += 1
 	})
 
-	subOrder, i := []*Node{x, y}, 0
+	// Traverse subtree
+	sub, i := []*Node{x, y}, 0
 	anotherRoot.Walk(func(c *Node) {
-		assert.Same(subOrder[i], c, "only traverse merged subtree")
+		assert.Same(sub[i], c)
 		i += 1
 	})
 }
 
-func TestNodePushNodeSuccess(t *testing.T) {
-	assert := assert.New(t)
-
-	{
-		a := NewNode()
-		b := NewNode(WithRow(NewRow(WithColumns(NewColumn()))))
-		c, err := a.PushNode(b)
-		assert.NoError(err, "Empty node accepts to be pushed with a non-empty node")
-		assert.Same(c, b, "Returned node is the same as that being pushed")
-		assert.Same(c.Parent(), a, "A will be B(C)'s parent")
-		assert.Same(c, a.nodes[0], "B(C) will be A's child")
-	}
-	{
-		a := NewNode(WithRow(NewRow(WithColumns(NewColumn()))))
-		// by current design, this won't happen
-		wont := NewRow()
-		wont.schema = nil
-		b := NewNode(WithRow(wont))
-		c, err := a.PushNode(b)
-		assert.NoError(err, "Empty node is allowed to be pushed to a non-empty node")
-		assert.Same(c.Schema(), a.Schema(), "B(C) will inherit A")
-	}
-	{
-		a := NewNode(WithRow(NewRow(WithColumns(NewColumn()))))
-		b := NewNode(WithRow(NewRow(WithSchema(a.Schema()))))
-		c, err := a.PushNode(b)
-		assert.NoError(err, "Accepts nodes with identical column schema")
-		assert.Same(c, b)
-		assert.Same(c.parent, a)
-		assert.Same(c, a.nodes[0])
-	}
-}
-
-func TestNodePushNodeFailed(t *testing.T) {
+func TestNodePushNode(t *testing.T) {
 	assert := assert.New(t)
 
 	{
 		a := NewNode()
 		_, err := a.PushNode(nil)
-		assert.EqualError(err, "PushNode: incoming can't be nil")
+		assert.EqualError(err, "PushNode: nil incoming")
 	}
 	{
+		// A has no schema, B has no row nor node schema
 		a := NewNode()
 		_, err := a.PushNode(NewNode(WithRow(nil)))
-		assert.EqualError(err, "PushNode: can't add empty node", "node with nil row is considered as empty")
+		assert.EqualError(err, "PushNode: no schema to set")
 	}
 	{
+		// A has no schema, B has no row nor node schema
 		a := NewNode()
 		b := NewNode()
 		_, err := a.PushNode(b)
-		assert.EqualError(err, "PushNode: can't add empty node", "since both nodes are empty")
+		assert.EqualError(err, "PushNode: no schema to set")
 	}
 	{
+		// A has no schema, B has no row, but has node schema
 		a := NewNode()
-		// by current design, this won't happen
-		wont := NewRow()
-		wont.schema = nil
-		b := NewNode(WithRow(wont))
+		b := NewNode()
+		b.Push()
 		_, err := a.PushNode(b)
-		assert.EqualError(err, "PushNode: both nodes have no schemas")
+		assert.NoError(err)
 	}
 	{
-		a := NewNode(WithRow(NewRow(WithColumns(NewColumn()))))
-		b := NewNode(WithRow(NewRow(WithColumns(NewColumn()))))
+		// A has no schema, B has no row, but has node schema
+		a := NewNode()
+		b := NewNode(WithColumns(NewColumn()))
+		assert.Nil(b.Row())
 		_, err := a.PushNode(b)
-		assert.EqualError(err, "PushNode: incoming node must have the same schema")
+		assert.NoError(err)
+		assert.NotNil(b.Row(), "A creates an empty Row for B")
+		assert.Same(b.Schema(), a.Schema(), "A's node schema = B's node schema")
+		assert.Same(b.Row().Schema(), a.Schema(), "A's node schema = B's row schema")
+	}
+	{
+		// A has no schema, B has row, but no node schema
+		a := NewNode()
+		b := NewNode(WithRow(NewRow()))
+		_, err := a.PushNode(b)
+		assert.NoError(err)
+	}
+	{
+		// A has no schema, B has row and node schema
+		a := NewNode()
+		b := NewNode(WithColumns(NewColumn()), WithRow(NewRow()))
+		assert.NotNil(b.Schema())
+		assert.NotNil(b.Row().Schema())
+		_, err := a.PushNode(b)
+		assert.NoError(err)
+		// A looks for B's row schema over node schema.
+		assert.Same(b.Row().Schema(), a.Schema())
+		assert.NotSame(b.Schema(), a.Schema())
+	}
+	{
+		// A has schema, B has no row nor schema.
+		a := NewNode()
+		a.Push(1)
+		b := NewNode()
+		_, err := a.PushNode(b)
+		assert.NoError(err)
+	}
+	{
+		// A has schema, B has no row, but has node schema.
+		a := NewNode()
+		a.Push(1)
+		b := NewNode(WithColumns(NewColumn()))
+		assert.Nil(b.Row())
+		_, err := a.PushNode(b)
+		assert.NoError(err)
+		assert.NotNil(b.Row(), "A creates an empty Row for B")
+		assert.NotSame(b.Schema(), a.Schema(), "B's node schema doesn't changed")
+		assert.Same(b.Row().Schema(), a.Schema(), "A's node schema = B's row schema")
+	}
+	{
+		// A has schema, B has row but different schema.
+		a := NewNode()
+		a.Push(1)
+		b := NewNode(WithRow(NewRow()))
+		_, err := a.PushNode(b)
+		assert.EqualError(err, "PushNode: row of the incoming node doesn't match my node schema")
+	}
+	{
+		// A has schema, B has row with same schema.
+		a := NewNode()
+		a.Push(1)
+		b := NewNode(WithRow(NewRow(WithRowSchema(a.Schema()))))
+		c, err := a.PushNode(b)
+		assert.NoError(err)
+		assert.Same(b.Row().Schema(), a.Schema())
+
+		// Create another root
+		p := NewNode()
+		q := NewNode(WithRow(NewRow(WithRowSchema(a.Schema()))))
+		_, err = p.PushNode(q)
+		assert.NoError(err)
+
+		// Merge and check all nodes
+		_, err = c.PushNode(p)
+		assert.NoError(err)
+
+		assert.Same(p.Row().Schema(), a.Schema())
+		assert.Same(b.Row().Schema(), q.Row().Schema())
 	}
 }
 
 func TestNodePush(t *testing.T) {
-	var (
-		assert         = assert.New(t)
-		checkSchemaStr = func(n *Node, fn func(i int, s string)) {
-			for i, col := range n.Schema().cols {
-				fn(i, col.String())
-			}
-		}
-	)
+	var assert = assert.New(t)
 
 	{
+		// Check trivial push
 		a := NewNode()
 		b, err := a.Push()
-		assert.NoError(err, "results a node with 0 column schema, a trivial node")
-		assert.Same(b.Parent(), a, "A will be B's parrent")
-		assert.Same(b.Schema(), a.Schema(), "A and B shares the same schema")
+		assert.NoError(err)
+		assert.Same(b.Parent(), a)
+		assert.Same(b.Row().Schema(), a.Schema())
 		assert.Equal(1, a.NodesCount())
 	}
 	{
-		a := NewNode(WithRow(NewRow(WithColumns(NewColumn(WithWidth(20))))))
+		// Check inheritance
+		a := NewNode()
+		assert.Nil(a.Schema())
+		assert.Nil(a.Row())
+
+		b, _ := a.Push("push")
+		assert.Same(b.Parent(), a)
+		assert.Same(b.Row().Schema(), a.Schema(), "A's node schema = B's row schema")
+		assert.Nil(b.Schema(), "B has no node schema")
+
+		c, _ := a.Push("push")
+		assert.Same(c.Parent(), a)
+		assert.Same(c.Row().Schema(), b.Row().Schema(), "C's row schema = B's row schema")
+		assert.Nil(c.Schema())
+
+		d, _ := b.Push("push")
+		assert.Same(d.Row().Schema(), b.Schema(), "D's row schema = B's node schema")
+	}
+
+	var checkSchemaStr = func(n *Node, fn func(i int, s string)) {
+		for i, col := range n.Schema().cols {
+			fn(i, col.String())
+		}
+	}
+
+	{
+		// Check fmtstr gets enforced by node schema
+		a := NewNode(WithColumns(NewColumn(WithWidth(20))))
 		a.Push("1", "12", "123")
-		initial := []string{"%20s"}
+		expected := []string{"%20s"}
 		checkSchemaStr(a, func(i int, s string) {
-			assert.Equal(initial[i], s, "push data into a predefined node")
+			assert.Equal(expected[i], s)
 		})
 	}
 	{
-		a := NewNode(WithRow(NewRow(WithData(0, 1))))
-		initial := []string{"%1s", "%1s"}
-		checkSchemaStr(a, func(i int, s string) {
-			assert.Equal(initial[i], s, "initial with a node that alreadys has a row")
-		})
-		assert.Equal(0, a.NodesCount(), "make sure it has no children")
-		a.Push("1", "12", "123")
-		after := []string{"%1s", "%2s"}
-		checkSchemaStr(a, func(i int, s string) {
-			assert.Equal(after[i], s, "even a pre-rowed node, the push works as expected")
-		})
-	}
-	{
+		// Check fmtstr gets enforced and updates
 		a := NewNode()
 		a.Push("1", "12", "123")
-		initial := []string{"%1s", "%2s", "%3s"}
+		expected := []string{"%1s", "%2s", "%3s"}
 		checkSchemaStr(a, func(i int, s string) {
-			assert.Equal(initial[i], s, "initial push automatically creates a schema of 3 columns")
+			assert.Equal(expected[i], s, "auto create schema of 3 columns")
 		})
+
 		b, _ := a.Push()
-		state1 := initial
 		checkSchemaStr(a, func(i int, s string) {
-			assert.Equal(state1[i], s, "pushed empty node alters no schema since its widths are 0s")
+			assert.Equal(expected[i], s, "push empty alters nothing")
 		})
+
 		a.Push("", "123", "1234", "1234")
-		state2 := []string{"%1s", "%3s", "%4s"}
+		expected = []string{"%1s", "%3s", "%4s"}
 		checkSchemaStr(a, func(i int, s string) {
-			assert.Equal(state2[i], s, "data with longer width updates schema, over-field is discarded")
+			assert.Equal(expected[i], s, "be enforced to 3 columns & longer width updated")
 		})
+
+		// node -> b -> a, updates to b also updates to a
 		b.Push("12345", "12345", "12345", "12345")
-		state3 := []string{"%5s", "%5s", "%5s"}
+		expected = []string{"%5s", "%5s", "%5s"}
 		checkSchemaStr(a, func(i int, s string) {
-			assert.Equal(state3[i], s, "put new child under B also updates schema to A")
+			assert.Equal(expected[i], s, "A should be updated")
 		})
 	}
 }
@@ -416,15 +468,17 @@ func TestNodeSortFailed(t *testing.T) {
 	assert := assert.New(t)
 
 	{
+		// Empty node have no schema, anything results an error
 		n := NewNode()
 		err := n.Sort(0)
-		assert.EqualError(err, "Sort: no such field", "empty node has no fields")
+		assert.EqualError(err, "Sort: column 0 doesn't exist")
 	}
 	{
+		// Over index range
 		n := NewNode()
 		n.Push()
 		err := n.Sort(1)
-		assert.EqualError(err, "Sort: no such field")
+		assert.EqualError(err, "Sort: column 1 doesn't exist")
 	}
 	{
 		n := NewNode()
@@ -452,15 +506,15 @@ func TestNodeSortSuccessOneOrNoItem(t *testing.T) {
 	assert := assert.New(t)
 
 	{
-		n := NewNode(WithRow(NewRow(WithColumns(NewColumn()))))
+		n := NewNode(WithColumns(NewColumn()))
 		err := n.Sort(0)
-		assert.NoError(err, "have column, no items, it returns immediately")
+		assert.NoError(err, "sort 0 item with column schema won't trigger error")
 	}
 	{
 		n := NewNode()
 		n.Push(-9, "violation")
 		err := n.Sort(0)
-		assert.NoError(err, "one item, it returns immediately")
+		assert.NoError(err)
 	}
 	{
 		n := NewNode()
@@ -471,7 +525,7 @@ func TestNodeSortSuccessOneOrNoItem(t *testing.T) {
 				return a.(string) < b.(string)
 			}
 		}))
-		assert.NoError(err, "one item, it returns immediately, no trigger cmp matcher that panics")
+		assert.NoError(err, "sort 1 item won't trigger cmp matching")
 	}
 }
 
@@ -560,25 +614,25 @@ func TestPrintingRunRow(t *testing.T) {
 		rOpts rOpts
 		out   string
 	}{
-		"empty row prints nothing": {
+		"empty row -> ": {
 			pOpts{}, rOpts{}, "",
 		},
-		"equals empty string, print only new line": {
-			pOpts{}, rOpts{WithColumns(NewColumn())}, "\n",
+		"1 column empty string -> \n": {
+			pOpts{}, rOpts{WithRowColumns(NewColumn())}, "\n",
 		},
-		"default case": {
+		"various types": {
 			pOpts{},
-			rOpts{WithData(1, "hello", nil, 123.1, (*string)(nil))},
+			rOpts{WithRowData(1, "hello", nil, 123.1, (*string)(nil))},
 			"1 hello  123.1 <nil>\n",
 		},
-		"without column separator": {
+		"various types without separator": {
 			pOpts{WithColSep("")},
-			rOpts{WithData(1, "hello", nil, 123.1, (*string)(nil))},
+			rOpts{WithRowData(1, "hello", nil, 123.1, (*string)(nil))},
 			"1hello123.1<nil>\n",
 		},
-		"custom column separator and line break": {
+		"various types with my separator and no line break": {
 			pOpts{WithColSep("##"), WithLineBrk("")},
-			rOpts{WithData(1, "hello", nil, 123.1, (*string)(nil))},
+			rOpts{WithRowData(1, "hello", nil, 123.1, (*string)(nil))},
 			"1##hello####123.1##<nil>",
 		},
 	}
@@ -608,15 +662,16 @@ func TestPrintingRunNode(t *testing.T) {
 		a := NewNode()
 		a.Push()
 		p.RunNode(a)
-		assert.Equal("", s.String(), "empty row prints nothing")
+		assert.Equal("", s.String(), "node with empty row prints nothing")
 	}
 	{
 		a := NewNode()
 		a.Push(nil)
 		p.RunNode(a)
-		assert.Equal("\n", s.String(), "one column node with empty string")
+		assert.Equal("\n", s.String(), "1 column node with empty string")
 	}
 	{
+		// Complex case with field shrink and descendants
 		s.Reset()
 		a := NewNode()
 		b, _ := a.Push("1", "12", "123")
@@ -625,17 +680,20 @@ func TestPrintingRunNode(t *testing.T) {
 		b.Push("12345", "12345", "12345", "12345")
 		p.RunNode(a)
 		assert.Equal(
-			"    1    12   123\n"+"12345 12345 12345\n"+
-				"                 \n"+"        123  1234\n",
+			"    1    12   123\n"+
+				"12345 12345 12345\n"+
+				"                 \n"+
+				"        123  1234\n",
 			s.String(),
-			"complex case with field cutting and descendant",
 		)
 		s.Reset()
+
+		// Print subtree
 		p.RunNode(b)
 		assert.Equal(
-			"    1    12   123\n"+"12345 12345 12345\n",
+			"    1    12   123\n"+
+				"12345 12345 12345\n",
 			s.String(),
-			"a non-root node should also output itself",
 		)
 	}
 }
@@ -646,11 +704,11 @@ func TestRowString(t *testing.T) {
 		in       *Row
 		expected string
 	}{
-		"nil data outputs empty string": {NewRow(), ""},
-		"no data outpus empty string":   {NewRow(WithColumns(NewColumn())), ""},
-		"all auto width fields": {
+		"empty row -> ":    {NewRow(), ""},
+		"1 column row -> ": {NewRow(WithRowColumns(NewColumn())), ""},
+		"auto-width various types": {
 			NewRow(
-				WithData(
+				WithRowData(
 					nil,
 					struct{}{},
 					-10,
@@ -663,16 +721,16 @@ func TestRowString(t *testing.T) {
 			),
 			" {} -10  <nil> no problem 1989-12-27 00:00:00 +0000 UTC Dec 27 1989",
 		},
-		"custom specified fields and overs a field": {
+		"typesetting and enforce 5 columns": {
 			NewRow(
-				WithColumns(
+				WithRowColumns(
 					NewColumn(WithWidth(3)),
 					NewColumn(WithWidth(0)),
 					NewColumn(WithWidth(0), WithLeftAlignment()),
 					NewColumn(WithWidth(5), WithLeftAlignment()),
 					NewColumn(WithLeftAlignment()),
 				),
-				WithData(
+				WithRowData(
 					nil,
 					"nowidth",
 					"nowidthleft",
@@ -683,8 +741,8 @@ func TestRowString(t *testing.T) {
 			),
 			"    nowidth nowidthleft -10   no problem",
 		},
-		"lacks a field": {
-			NewRow(WithColumns(NewColumn(), NewColumn()), WithData(0)),
+		"enforce 2 columns": {
+			NewRow(WithRowColumns(NewColumn(), NewColumn()), WithRowData(0)),
 			"0 ",
 		},
 	}
@@ -705,7 +763,7 @@ func TestNodeString(t *testing.T) {
 		data = [][]interface{}{
 			{-9, "violation", pt("1989-12-27"), "this"},
 			{0, "progress", pt("1988-08-17"), "column"},
-			{1227, "alcohol", pt("1993-02-13")},
+			{1227, "alcohol", pt("1993-02-13"), "hello"},
 			{712, "animal", pt("1999-07-01"), "returns"},
 			{712, "flawed", pt("1993-02-13"), "error"},
 			{12345, "ok", nil, "wont"},
@@ -717,12 +775,13 @@ func TestNodeString(t *testing.T) {
 		assert.Equal("", a.String(), "empty node prints nothing")
 	}
 	{
-		a := NewNode(WithRow(NewRow(WithColumns(
+		// complex case
+		a := NewNode(WithColumns(
 			NewColumn(WithLeftAlignment()),
 			NewColumn(WithWidth(16)),
 			NewColumn(),
 			NewColumn(WithWidth(0)),
-		))))
+		))
 		a.Push(data[0]...)
 		a.Push(data[1]...)
 		b, _ := a.Push(data[2]...)
@@ -732,13 +791,12 @@ func TestNodeString(t *testing.T) {
 		assert.Equal(
 			`-9           violation 1989-12-27 00:00:00 +0000 UTC this
 0             progress 1988-08-17 00:00:00 +0000 UTC column
-1227           alcohol 1993-02-13 00:00:00 +0000 UTC 
+1227           alcohol 1993-02-13 00:00:00 +0000 UTC hello
 12345               ok                               wont
 712             animal 1999-07-01 00:00:00 +0000 UTC returns
 712             flawed 1993-02-13 00:00:00 +0000 UTC error
 `,
 			a.String(),
-			"complext case with lacking field and descendants",
 		)
 	}
 }

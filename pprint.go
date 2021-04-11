@@ -18,94 +18,125 @@ func (n nodes) cell(col, row int) interface{} {
 	return n[row].Row().fields[col]
 }
 
-// Implements a tree node
+// Tree node.
 type Node struct {
 	nodes
 	parent *Node
 
-	// Defines how many columns a row contains for all its child nodes.
+	// Schema on child nodes.
 	schema *ColumnSchema
 
-	// Row data goes here. It's constrained by parent's schema.
+	// All input data goes here. The schema must be identical with parent's schema.
+	// For root nodes, this field could be nil.
 	row *Row
 }
 
-// All the input will be wrapped into a new node, and will become a child of the node being pushed to.
-// Returns a pointer to the newly created node. The schema of the newly created node will be set to the same as the node
-// being pushed to, i.e. it inherits the schema.
+// Creates a node to store the inputs and makes it a child of the current receiver.
+// Returns a pointer to the created node and any error encountered.
 //
-// Therefore if we're pushing a row containing 5 fields, but the current node only have 4 in its schema, the 5th field will
-// be silently discarded. If there are 6 in its schema, an empty field will be generated automatically.
+// The parent of the receiver applys its schema to the inputs being pushed.
+// That is, all the column numbers, width and padding of the inputs inherits the schema that is shared among entire tree.
+//
+// If the reciever has no schema, i.e. a root node without children.
+// A schema instance will be generated based on the first pushed input.
+// The self-generated schema instance is always of columns with auto-width and right-alignment.
+//
+// Use PushRow() or PushNode() to create tree containing different schemas per node.
+//
+// The column (fields) amount of the input doesn't have to be the same with receiver's.
+// It will be enlarged (with empty string) or shrinked to fit the receiver's schema.
 func (n *Node) Push(a ...interface{}) (newNode *Node, err error) {
-	return n.PushRow(
-		NewRow(WithSchema(n.schema), WithData(a...)),
-	)
+	var opts []RowOpt
+
+	switch n.schema == nil {
+	case true:
+		// Receiver has no children, it's ok to accept any new nodes,
+		if n.parent == nil {
+			opts = []RowOpt{WithRowData(a...)}
+		} else {
+			// but we force it to inherit by giving my parent's schema
+			opts = []RowOpt{WithRowSchema(n.parent.schema), WithRowData(a...)}
+		}
+	case false:
+		// Receiver has children, we new a Row with identical schema to enforce inheritance.
+		opts = []RowOpt{WithRowSchema(n.schema), WithRowData(a...)}
+	}
+	return n.PushRow(NewRow(opts...))
 }
 
-// The method can be used to push data with different schema to a leaf node.
+// Accepts a customized Row. Returns a pointer to the created node and any error encountered.
 func (n *Node) PushRow(r *Row) (newNode *Node, err error) {
 	return n.PushNode(NewNode(WithRow(r)))
 }
 
-// Merges the node into the tree by placing incoming into the child nodes of the receiving node.
-// Returns the pointer to the pushed node.
+// Makes incoming node become a child of the receiver. Returns a pointer to the mutated incoming node and
+// any error encountered.
 //
-// 1) The row in an incoming node cannot be nil.
+// Consistency is maintained by comparing each other's node.schema and node.row.schema.
+// Receiver(A) accepts incoming node(B) if:
 //
-// 2) The schemas of both nodes cannot be nil.
+// 1. A has no node schema, B contains a Row instance.
+// 2. A has no node schema, B contains no Row instance, but B has node schema (tree root)
+// 3. A has node schema, B contains no Row instance. (tree root)
+// 4. A has node schema, B contains a Row instance with the schema which is exactly A's node schema.
 //
-// 3) Since receiving's schema dominates its children, the incoming's schema must be identical to receiving's.
-//
-// 4) If the schema in either node is nil, it will be set to that of the other's, to implement inheritance.
-//
-// In other words, if A is a leaf node, any B can be pushed as long as it's not empty. Otherwise, A accepts B only if
-// they share the same schema object.
-//
-// BUG(adios): I didn't implement loop detection. Better to use this function only if you understand what you need.
-func (n *Node) PushNode(incoming *Node) (modified *Node, err error) {
-	if incoming == nil {
-		return nil, fmt.Errorf("PushNode: incoming can't be nil")
+// BUG(adios): Use carefully, no loop detections.
+func (n *Node) PushNode(in *Node) (inMutated *Node, err error) {
+	if in == nil {
+		return nil, fmt.Errorf("PushNode: nil incoming")
 	}
 
-	ir := incoming.Row()
-	if ir == nil {
-		// case 1: no sense if there is no data to add
-		return nil, fmt.Errorf("PushNode: can't add empty node")
-	}
-
-	irs := ir.Schema()
-	if irs == nil {
-		// by current design, there are no ways to enter this branch, irs won't be nil.
-		if n.schema == nil {
-			return nil, fmt.Errorf("PushNode: both nodes have no schemas")
+	switch n.schema == nil {
+	case true:
+		// A has no schema, it's open, try to get one by searching B
+		switch in.Row() == nil {
+		case true:
+			if in.Schema() == nil {
+				return nil, fmt.Errorf("PushNode: no schema to set")
+			}
+			// B is a tree root, promotes B's node schema to my schema, and gives B a Row to merge.
+			n.schema = in.Schema()
+			in.row = NewRow(WithRowSchema(n.schema))
+		case false:
+			// B has row, promotes it to become my schema
+			n.schema = in.Row().Schema()
 		}
-		incoming.schema = n.schema
-	} else if n.schema == nil {
-		// case 4: inheritance
-		n.schema = irs
-	} else if n.schema != irs {
-		// case 3: reject if not the same
-		return nil, fmt.Errorf("PushNode: incoming node must have the same schema")
+	case false:
+		switch in.Row() == nil {
+		case true:
+			// B is a tree root without Row instance, gives it an empty Row to merge.
+			in.row = NewRow(WithRowSchema(n.schema))
+		case false:
+			if in.Row().Schema() != n.schema {
+				return nil, fmt.Errorf("PushNode: row of the incoming node doesn't match my node schema")
+			}
+			// Same schema is allowed
+		}
 	}
 
-	incoming.parent = n
-	n.nodes = append(n.nodes, incoming)
+	in.parent = n
+	n.nodes = append(n.nodes, in)
 
-	return incoming, err
+	return in, err
 }
 
-// Sort the node's children (rows) based on the original value stored on the given column index, index starts from 0.
+// Sort receiver's child nodes (that contain rows) on the given column of that node's row.
+// Accepts a column index starting from 0. Returns any error encountered.
+//
+// It uses stable sort to compare the raw value of the specified column field.
+// Sort on values with non identical type returns an error.
+// Sort on values with no type comparators returns an error.
+//
+// Note that it doesn't sort descendants.
+//
 // Sorting options are:
 //
-// WithDescending(): default is to sort in ascending.
+// WithDescending(): default is ascending.
 //
-// WithCmpMatchers(fn): set fn to sort additional types. By default Sort() can handle: int, string and time.Time.
-//
-// Note that it sorts with stable algorithm, and sorts on original value, not the outputting string represention. It sort
-// only current children, not recursively to its all descendants.
+// WithCmpMatchers(...func(a interface{}) CmpFn): to sort more types. Builtins: int, string and time.Time.
 func (n *Node) Sort(col int, opts ...SortOpt) error {
 	if n.schema == nil || col < 0 || col >= n.schema.count {
-		return fmt.Errorf("Sort: no such field")
+		return fmt.Errorf("Sort: column %d doesn't exist", col)
 	}
 	if n.NodesCount() < 2 {
 		return nil
@@ -120,7 +151,7 @@ func (n *Node) Sort(col int, opts ...SortOpt) error {
 	return nil
 }
 
-// Do things on each descendant of current node.
+// Traverses receiver's descendants.
 func (n *Node) Walk(fn func(*Node)) {
 	n.EachNode(func(c *Node) {
 		fn(c)
@@ -128,69 +159,84 @@ func (n *Node) Walk(fn func(*Node)) {
 	})
 }
 
-// Do things on each child of current node. Use Walk to do things on all descendants.
+// Traverses receiver's children. Use Walk() to traverse descendants.
 func (n *Node) EachNode(fn func(*Node)) {
 	for _, c := range n.nodes {
 		fn(c)
 	}
 }
 
-// Returns the final output (includes all descendants) in a string with default printing options.
+// Collects each descendant's String() and prints with default options.
 func (n *Node) String() string {
 	var b strings.Builder
 	NewPrinting(WithWriter(&b), WithColSep(" ")).RunNode(n)
 	return b.String()
 }
 
-// Returns how many children this node has.
+// Returns receiver's child count.
 func (n *Node) NodesCount() int {
 	return len(n.nodes)
 }
 
+// Returns receiver's parent.
 func (n *Node) Parent() *Node {
 	return n.parent
 }
 
-// Returns the attached row in current node. And normally, a root node has no row attached.
+// Returns the attached Row instance of current receiver.
 func (n *Node) Row() *Row {
 	return n.row
 }
 
-// Returns the schema that is used to donminate the node's children.
+// Returns the schema instance of current receiver.
 func (n *Node) Schema() *ColumnSchema {
 	return n.schema
 }
 
-// Check if a node isn't a tree root.
+// Returns true if receiver has parent.
 func (n *Node) IsNotRoot() bool {
 	return n.Parent() != nil
 }
 
-// Options:
+// Returns a pointer to a Node instance. Node options are:
 //
-// WithRow(*Row): attaches the *Row instance to the newly created node. Used to manually create a non-root node.
+// WithRow(*Row): creates a node with provided Row instance.
+//
+// WithSchema(*ColumnSchema): to inherit the schema from an existing row or node to be applied to all of its children.
+//
+// WithColumns(...Column): to create a node with provided column schema to be applied to all of its children.
 func NewNode(opts ...NodeOpt) *Node {
 	n := &Node{}
 	for _, opt := range opts {
 		opt(n)
-	}
-	if n.row != nil {
-		// A NewRow() created row always has a schema instance.
-		n.schema = n.row.Schema()
 	}
 	return n
 }
 
 type NodeOpt func(*Node)
 
-// WithRow(*Row): attaches the *Row instance to the newly created node. Used to manually create a non-root node.
+// To inherit the schema from an existing row or node to be applied to all of its children.
+func WithSchema(s *ColumnSchema) NodeOpt {
+	return func(n *Node) {
+		n.schema = s
+	}
+}
+
+// To create a node with provided column schema to be applied to all of its children.
+func WithColumns(c ...Column) NodeOpt {
+	return func(n *Node) {
+		n.schema = NewSchema(c...)
+	}
+}
+
+// Creates a node with provided Row instance.
 func WithRow(r *Row) NodeOpt {
 	return func(n *Node) {
 		n.row = r
 	}
 }
 
-// Column relates to padding. It stores the width a column should be at current time.
+// Stores alignment and width.
 type Column struct {
 	width int
 	pad   struct {
@@ -199,7 +245,7 @@ type Column struct {
 	}
 }
 
-// Returns the FmtStr representation of the current column to be used in the fmt.Printf. e.g.: "%3s", "%-5s".
+// Turns current column into a format string, e.g.: "%3s", "%-5s".
 func (c Column) String() string {
 	if s := strconv.FormatInt(int64(c.width), 10); c.pad.right {
 		return "%-" + s + "s"
@@ -208,12 +254,11 @@ func (c Column) String() string {
 	}
 }
 
-// Options are:
+// Returns a Column instance. Column options are:
 //
-// WithWidth(int): set to disable auto padding on this column. Always output with the given width of padding. E.g.:
-// WithWidth(20) equals to "%20s".
+// WithWidth(int): by default all columns are auto-width. Set to fix-width. WithWidth(20) is translated to "%20s".
 //
-// WithLeftAlignment(): set to pad to the right. E.g.: WithWidth(20), WithLeftAlignment() = "%-20s".
+// WithLeftAlignment(): set to pad to the right. For example: WithWidth(20), WithLeftAlignment() = "%-20s".
 func NewColumn(opts ...ColumnOpt) Column {
 	c := Column{}
 	for _, opt := range opts {
@@ -224,8 +269,7 @@ func NewColumn(opts ...ColumnOpt) Column {
 
 type ColumnOpt func(*Column)
 
-// WithWidth(int): set to disable auto padding on this column. Always output with the given width of padding. E.g.:
-// WithWidth(20) equals to "%20s".
+// By default all columns are auto-width. Set to fix-width. WithWidth(20) is translated to "%20s".
 func WithWidth(w int) ColumnOpt {
 	return func(c *Column) {
 		if w < 0 {
@@ -236,14 +280,14 @@ func WithWidth(w int) ColumnOpt {
 	}
 }
 
-// WithLeftAlignment(): set to pad to the right. E.g.: WithWidth(20), WithLeftAlignment() = "%-20s".
+// Set to pad to the right. For example: WithWidth(20), WithLeftAlignment() = "%-20s".
 func WithLeftAlignment() ColumnOpt {
 	return func(c *Column) {
 		c.pad.right = true
 	}
 }
 
-// How many columns in a row.
+// Defines how many columns in a row and their corresponding Column data.
 type ColumnSchema struct {
 	cols  []Column
 	count int
@@ -256,7 +300,7 @@ func NewSchema(c ...Column) *ColumnSchema {
 	}
 }
 
-// Automatically generate the corresponding Columns on given fields.
+// Creates a column schema instance with N columns. N is the length of input fields.
 func NewSchemaFrom(fields []interface{}) *ColumnSchema {
 	size := len(fields)
 
@@ -266,35 +310,32 @@ func NewSchemaFrom(fields []interface{}) *ColumnSchema {
 	}
 }
 
-// The struct that saves both the original input and the converted string output.
+// Stores both raw input values and their string representations.
 type Row struct {
 
 	// Defines how many columns this row contains.
 	schema *ColumnSchema
 
-	// Stores original unmodified inputs that is shrinked or expanded to alignto the schema.
+	// Raw input values, has been shrinked or enlarged by current column schema.
 	fields []interface{}
 
-	// Stores the string representation of each input and is shrinked or expanded to align to the schema.
-	// The data is also required to calculate column widths.
-	// Use []interface{} instead of []string so that I can pass to fmt.Printf without creating a new slice.
+	// String representations of Row.fields. Used to calculate padding and fmt.Printf().
 	fmtArgs []interface{}
 }
 
-// Do things on each FmtStr string from the columns defined in the attached ColumnSchema instance.
+// Traverses format strings with String() on each Column instance.
 func (r *Row) EachFmtStr(fn func(string)) {
 	for _, c := range r.schema.cols {
 		fn(c.String())
 	}
 }
 
-// Returns a string slice that stores the string representation of each input field that is shrinked or expanded to align
-// to the schema.
+// Returns the string slice that stores the string representations of raw values.
 func (r *Row) FmtArgs() []interface{} {
 	return r.fmtArgs
 }
 
-// Returns the row's final output in a string with default printing options.
+// Returns a string by calling fmt.Fprintf() on fmtStr and fmtArgs.
 func (r *Row) String() string {
 	var b strings.Builder
 	NewPrinting(WithWriter(&b), WithColSep(" "), WithLineBrk("")).RunRow(r)
@@ -305,16 +346,19 @@ func (r *Row) Schema() *ColumnSchema {
 	return r.schema
 }
 
-// Preparation the following things:
-// 1. maintains the schema, creates one if it has no schema.
-// 2. shrinks or expands input fields to align to the schema.
-// 3. convert input to string, updates its length into the schema instance.
+// Initializes a Row instance, on each creation:
+//
+// 1. if no schema found, create a new one based on current data.
+// 2. if with schema, shrink or enlarge input fields to fit to the schema.
+// 3. do string conversion, calculate string length, updates to schema instance.
 func (r *Row) prepare() {
-	if f := r.fields; r.schema == nil {
-		r.schema = NewSchemaFrom(f)
-	} else {
-		// shrink or expand fields
-		r.fields = resizeSlice(f, r.schema.count)
+	switch fs := r.fields; r.schema == nil {
+	case true:
+		// auto creation
+		r.schema = NewSchemaFrom(fs)
+	case false:
+		// shrink or enlarge fields
+		r.fields = resizeSlice(fs, r.schema.count)
 	}
 
 	r.fmtArgs = make([]interface{}, r.schema.count)
@@ -332,16 +376,13 @@ func (r *Row) prepare() {
 	}
 }
 
-// A created row will always have schema instance. Options are:
+// Returns a pointer to a Row instance. Row options are:
 //
-// WithSchema(*ColumnSchema): to inherit the schema from an existing row or node.
+// WithRowSchema(*ColumnSchema): to inherit the schema from an existing row or node.
 //
-// WithColumns(...Column): to create a row with fixed-width, left-alignment columns.
+// WithRowColumns(...Column): to create a row with provided column schema.
 //
-// WithData(...interface{}): anything to be set in the row.
-//
-// If no schema nor columns options specified, a row will generate the schema based on the input data and auto-width
-// are always applyed to the auto-generated columns.
+// WithData(...interface{}): set data to the row.
 func NewRow(opts ...RowOpt) *Row {
 	r := &Row{}
 	for _, opt := range opts {
@@ -353,22 +394,22 @@ func NewRow(opts ...RowOpt) *Row {
 
 type RowOpt func(*Row)
 
-// WithSchema(*ColumnSchema): to inherit the schema from an existing row or node.
-func WithSchema(s *ColumnSchema) RowOpt {
+// To inherit the schema from an existing row or node.
+func WithRowSchema(s *ColumnSchema) RowOpt {
 	return func(r *Row) {
 		r.schema = s
 	}
 }
 
-// WithColumns(...Column): to create a row with fixed-width, left-alignment columns.
-func WithColumns(c ...Column) RowOpt {
+// To create a row with provided column schema.
+func WithRowColumns(c ...Column) RowOpt {
 	return func(r *Row) {
 		r.schema = NewSchema(c...)
 	}
 }
 
-// WithData(...interface{}): anything to be set in the row.
-func WithData(a ...interface{}) RowOpt {
+// Set data to the row.
+func WithRowData(a ...interface{}) RowOpt {
 	return func(r *Row) {
 		r.fields = a
 	}
@@ -376,9 +417,7 @@ func WithData(a ...interface{}) RowOpt {
 
 // Converts anything to a string. The function itself handles the common types including:
 // fmt.Stringer, string, []byte, uint, int and nil. It passes anything else to the fmt.Sprintf
-// to get the string representation of that value.
-//
-// The function is used while constructing a Row instance.
+// to get the string representation of that value. It is used when initializing a Row instance.
 func MustToString(a interface{}) string {
 	var s string
 
@@ -401,12 +440,12 @@ func MustToString(a interface{}) string {
 	return s
 }
 
-// To cut or to expand input fields.
+// To cut or to enlarge input fields.
 func resizeSlice(s []interface{}, become int) []interface{} {
 	switch cur := len(s); {
 	case cur == become:
 	case cur < become:
-		// Newly expanded fields are set to nil.
+		// Enlarged fields are set to nil.
 		s = append(s, make([]interface{}, become-cur)...)
 	case cur > become:
 		s = s[0:become]
@@ -414,28 +453,31 @@ func resizeSlice(s []interface{}, become int) []interface{} {
 	return s
 }
 
-// A function that takes any two values of a same type and can returns a boolean.
+// A comparator looks like this:
+//   func(a, b interface{}) {
+//     return a.(int) < b.(int)
+//   }
+// It is passed to generate a sort.Less() function.
 type CmpFn func(a, b interface{}) bool
 
 // Less() in sort.Interface
 type lessFn func(i, j int) bool
 
-// An adapter to transform Node.nodes so that it can be sort via sort.Stable.
+// An adapter to transform Node.nodes to be sort with sort.Stable().
 type sortable struct {
 	nodes
 
-	// positions the x on this column, leaves y variant, i.e. to compare value on this field.
+	// Positions the x on this column, leaves y variant, i.e. to compare value on this field.
 	col int
 
 	count int
 
-	// sort in descending order
+	// Sort in descending order
 	desc bool
 
 	less lessFn
 
-	// a chain of func that can generate some CmpFn,
-	// we run through this chain to find one CmpFn that can handle the type we are sorting.
+	// A chain of func that generates a CmpFn.
 	chain []func(a interface{}) CmpFn
 }
 
@@ -488,24 +530,24 @@ func (s *sortable) Less(i, j int) bool {
 	return s.less(i, j)
 }
 
-// []*Node is a 2-dimensions table. To be able to sort []*Node (rows), we need:
+// []*Node is a 2-dimensions slice. (table) And to sort the table's rows, we need:
 //
-// 1. in which column, the field value to be taken.
-// 2. check if all the field values are in the same type of that column.
-// 3. if yes, we need to set up a Less() of that type.
+// 1. compare in what type of the field value in which column.
+// 2. all values in that column must be in identical type.
+// 3. if we can sort the type of that field value.
 func createSortableOn(column int, ns []*Node, opts ...SortOpt) (*sortable, error) {
 	s := &sortable{
 		nodes: nodes(ns),
 		col:   column,
 		count: len(ns),
 
-		// set up a fallback Less(), so that a incidental call to Less() won't panic on empty Sortable.
+		// Set up a fallback Less(), so that an incidental call to Less() won't panic on an unit Sortable instance.
 		less: func(i, j int) bool { return true },
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
-	// put the default CmpFn finder that can compare types of string, int and time.Time.
+	// Put the default CmpFn finder.
 	s.chain = append(s.chain, MatchCmp)
 
 	if s.count > 0 {
@@ -532,7 +574,13 @@ func WithDescending() SortOpt {
 }
 
 // Multiple matcher functions can be provided as input.
-// They will be executed in order until a matcher can handle the current comparing type.
+// The method executes them in order until a matcher can handle the current comparing type.
+// A finder should look like this:
+//   func(a interface{}) {
+//     // you can do type switch on a to find a exact type of the input value,
+//     // or simply ignores it if you know in advance the field type you are comparing to.
+//     return func(a, b interface{}) { return a.(int) < b.(int) }
+//   }
 // See MatchCmp() to learn how to write a matcher.
 func WithCmpMatchers(m ...func(interface{}) CmpFn) SortOpt {
 	return func(s *sortable) {
@@ -541,7 +589,7 @@ func WithCmpMatchers(m ...func(interface{}) CmpFn) SortOpt {
 }
 
 // The default CmpFn matcher used in createSortableOn(). It uses type switch to find the type it can compare.
-// If you know the type of the comparing field, you could simply return a CmpFn without type switching.
+// It currently supports only types of string, int or time.Time.
 func MatchCmp(a interface{}) CmpFn {
 	var out CmpFn
 	switch a.(type) {
@@ -555,7 +603,7 @@ func MatchCmp(a interface{}) CmpFn {
 	return out
 }
 
-// Represents the printing algorithms.
+// Algorithm for printing.
 type Printing struct {
 	writer    io.Writer
 	colSep    string
@@ -590,7 +638,7 @@ func (p *Printing) RunRow(r *Row) {
 	})
 
 	if str == "" {
-		// means no columns to print, will panic fmt.Printf if r.FmtArgs() isn't nil
+		// Means no columns to print, will panic fmt.Printf if r.FmtArgs() isn't nil
 		return
 	}
 
@@ -604,7 +652,7 @@ func (p *Printing) RunRow(r *Row) {
 	fmt.Fprintf(p.writer, str, r.FmtArgs()...)
 }
 
-// Options are:
+// Printing options are:
 //
 // WithColSep(string): set column separator (field separator). Defaults to " ".
 //
@@ -625,28 +673,28 @@ func NewPrinting(opts ...PrintingOpt) *Printing {
 	return p
 }
 
-// A convenient helper to run a Printing instance.
+// Convenient helper to run a Printing instance.
 func Print(n *Node, opts ...PrintingOpt) {
 	NewPrinting(opts...).RunNode(n)
 }
 
 type PrintingOpt func(*Printing)
 
-// WithColSep(string): set column separator (field separator). Defaults to " ".
+// Set column separator (field separator). Defaults to " ".
 func WithColSep(sep string) PrintingOpt {
 	return func(p *Printing) {
 		p.colSep = sep
 	}
 }
 
-// WithLineBrk(string): set line break. Defaults to "\n".
+// Set line break. Defaults to "\n".
 func WithLineBrk(brk string) PrintingOpt {
 	return func(p *Printing) {
 		p.lineBrk = brk
 	}
 }
 
-// WithWriter(io.Writer): set writer. Defaults to os.Stdout.
+// Set writer. Defaults to os.Stdout.
 func WithWriter(w io.Writer) PrintingOpt {
 	return func(p *Printing) {
 		p.writer = w
