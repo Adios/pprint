@@ -1,6 +1,7 @@
 package pprint
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -799,4 +800,235 @@ func TestNodeString(t *testing.T) {
 			a.String(),
 		)
 	}
+}
+
+func Example_defaultUsage() {
+	var (
+		pt = func(date string) time.Time {
+			t, _ := time.Parse("2006-01-02", date)
+			return t
+		}
+		data = [][]interface{}{
+			{21196, "Keep On Truckin'", pt("1999-05-17"), "ahote glowtusks", 9.75},
+			{-1162, "Cry Wolf", pt("2007-10-16"), "adahy windshot", 4.22},
+			{-1248, "Needle In a Haystack", pt("1988-09-06"), "shikpa longmoon", 0.7},
+			{50994, "Greased Lightning", pt("1989-06-04"), "helushka emberhair", 2.72},
+			{80640, "Let Her Rip", pt("1981-01-13"), "geashkoo grassdream", 1.6},
+			{50997, "Up In Arms", pt("1981-01-13"), "oonnak hardrage", 0.58},
+		}
+	)
+
+	n := NewNode()
+	for _, row := range data {
+		_, err := n.Push(row...)
+		if err != nil {
+			panic(err)
+		}
+	}
+	// All push are auto-width by default
+	Print(n)
+
+	fmt.Println("===")
+
+	// Or using a customized a typeset
+	n = NewNode(
+		WithColumns(
+			NewColumn(),
+			NewColumn(WithLeftAlignment()),
+			NewColumn(),
+			NewColumn(WithWidth(24)),
+			// Width 0 means no padding
+			NewColumn(WithWidth(0)),
+		),
+	)
+	for _, row := range data {
+		n.Push(row...)
+	}
+	Print(n, WithColSep("|"))
+
+	fmt.Println("===")
+
+	// Use with a folder-like context
+	n = NewNode()
+	// Data 0, 1, 2 are under node n
+	n.Push(data[0]...)
+	m, _ := n.Push(data[1]...)
+	n.Push(data[2]...)
+
+	// Data 3, 4, 5 are under node m, which is the position of data 1
+	m.Push(data[3]...)
+	m.Push(data[4]...)
+	m.Push(data[5]...)
+
+	// Output order would be 0, 1, 3, 4, 5, 2
+	Print(n)
+	// Output:
+	// 21196     Keep On Truckin' 1999-05-17 00:00:00 +0000 UTC     ahote glowtusks 9.75
+	// -1162             Cry Wolf 2007-10-16 00:00:00 +0000 UTC      adahy windshot 4.22
+	// -1248 Needle In a Haystack 1988-09-06 00:00:00 +0000 UTC     shikpa longmoon  0.7
+	// 50994    Greased Lightning 1989-06-04 00:00:00 +0000 UTC  helushka emberhair 2.72
+	// 80640          Let Her Rip 1981-01-13 00:00:00 +0000 UTC geashkoo grassdream  1.6
+	// 50997           Up In Arms 1981-01-13 00:00:00 +0000 UTC     oonnak hardrage 0.58
+	// ===
+	// 21196|Keep On Truckin'    |1999-05-17 00:00:00 +0000 UTC|         ahote glowtusks|9.75
+	// -1162|Cry Wolf            |2007-10-16 00:00:00 +0000 UTC|          adahy windshot|4.22
+	// -1248|Needle In a Haystack|1988-09-06 00:00:00 +0000 UTC|         shikpa longmoon|0.7
+	// 50994|Greased Lightning   |1989-06-04 00:00:00 +0000 UTC|      helushka emberhair|2.72
+	// 80640|Let Her Rip         |1981-01-13 00:00:00 +0000 UTC|     geashkoo grassdream|1.6
+	// 50997|Up In Arms          |1981-01-13 00:00:00 +0000 UTC|         oonnak hardrage|0.58
+	// ===
+	// 21196     Keep On Truckin' 1999-05-17 00:00:00 +0000 UTC     ahote glowtusks 9.75
+	// -1162             Cry Wolf 2007-10-16 00:00:00 +0000 UTC      adahy windshot 4.22
+	// 50994    Greased Lightning 1989-06-04 00:00:00 +0000 UTC  helushka emberhair 2.72
+	// 80640          Let Her Rip 1981-01-13 00:00:00 +0000 UTC geashkoo grassdream  1.6
+	// 50997           Up In Arms 1981-01-13 00:00:00 +0000 UTC     oonnak hardrage 0.58
+	// -1248 Needle In a Haystack 1988-09-06 00:00:00 +0000 UTC     shikpa longmoon  0.7
+}
+
+func Example_differentLayouts() {
+	var (
+		pt = func(date string) time.Time {
+			t, _ := time.Parse("2006-01-02", date)
+			return t
+		}
+		data = [][]interface{}{
+			{21196, "Keep On Truckin'", pt("1999-05-17"), "ahote glowtusks", 9.75},
+			{-1162, "Cry Wolf", pt("2007-10-16"), "adahy windshot", 4.22},
+			{-1248, "Needle In a Haystack", pt("1988-09-06"), "shikpa longmoon", 0.7},
+			{5099, "Greased Lightning", pt("1989-06-04"), "helushka emberhair", 2.72},
+			{8064, "Let Her Rip", pt("1981-01-13"), "geashkoo grassdream", 1.6},
+			{5099, "Up In Arms", pt("1981-01-13"), "oonnak hardrage", 0.58},
+		}
+	)
+
+	n := NewNode()
+	// These 3 rows are under n, and share the same auto-width schema.
+	n.Push(data[0]...)
+	m, _ := n.Push(data[1]...)
+	n.Push(data[2]...)
+
+	// By default, Push() creates nodes that always share the same schema, even for different node level.
+	// We explictly create a typesetted row, and PushRow() it to the node m.
+	r := NewRow(
+		WithRowData(data[3]...),
+		WithRowColumns(
+			NewColumn(WithLeftAlignment()),
+			NewColumn(WithWidth(24)),
+			NewColumn(),
+			NewColumn(WithLeftAlignment()),
+			NewColumn(WithWidth(0)),
+		),
+	)
+
+	// Push it to the 2nd to create a new context (just like a new folder)
+	// Now data[3] is under node m.
+	_, err := m.PushRow(r)
+	if err != nil {
+		panic(err)
+	}
+
+	// These 2 rows are also under node m and data 3, 4, 5 share the same schema.
+	m.Push(data[4]...)
+	m.Push(data[5]...)
+
+	Print(n, WithColSep("|"))
+	// Output:
+	// 21196|    Keep On Truckin'|1999-05-17 00:00:00 +0000 UTC|ahote glowtusks|9.75
+	// -1162|            Cry Wolf|2007-10-16 00:00:00 +0000 UTC| adahy windshot|4.22
+	// 5099|       Greased Lightning|1989-06-04 00:00:00 +0000 UTC|helushka emberhair |2.72
+	// 8064|             Let Her Rip|1981-01-13 00:00:00 +0000 UTC|geashkoo grassdream|1.6
+	// 5099|              Up In Arms|1981-01-13 00:00:00 +0000 UTC|oonnak hardrage    |0.58
+	// -1248|Needle In a Haystack|1988-09-06 00:00:00 +0000 UTC|shikpa longmoon| 0.7
+}
+
+func Example_sort() {
+	var (
+		pt = func(date string) time.Time {
+			t, _ := time.Parse("2006-01-02", date)
+			return t
+		}
+		data = [][]interface{}{
+			{21196, "Keep On Truckin'", pt("1999-05-17"), "ahote glowtusks", 9.75},
+			{-1162, "Cry Wolf", pt("2007-10-16"), "adahy windshot", 4.22},
+			{-1248, "Needle In a Haystack", pt("1988-09-06"), "shikpa longmoon", 0.7},
+			{50994, "Greased Lightning", pt("1989-06-04"), "helushka emberhair", 2.72},
+			{80640, "Let Her Rip", pt("1981-01-13"), "geashkoo grassdream", 1.6},
+			{50997, "Up In Arms", pt("1981-01-13"), "oonnak hardrage", 0.58},
+		}
+	)
+
+	n := NewNode()
+	for _, row := range data {
+		n.Push(row...)
+	}
+
+	// Sort on 3rd column, note that it compares raw value, not the string representation.
+	n.Sort(2)
+
+	Print(n)
+	// Output:
+	// 80640          Let Her Rip 1981-01-13 00:00:00 +0000 UTC geashkoo grassdream  1.6
+	// 50997           Up In Arms 1981-01-13 00:00:00 +0000 UTC     oonnak hardrage 0.58
+	// -1248 Needle In a Haystack 1988-09-06 00:00:00 +0000 UTC     shikpa longmoon  0.7
+	// 50994    Greased Lightning 1989-06-04 00:00:00 +0000 UTC  helushka emberhair 2.72
+	// 21196     Keep On Truckin' 1999-05-17 00:00:00 +0000 UTC     ahote glowtusks 9.75
+	// -1162             Cry Wolf 2007-10-16 00:00:00 +0000 UTC      adahy windshot 4.22
+}
+
+func Example_sortRecursively() {
+	var (
+		pt = func(date string) time.Time {
+			t, _ := time.Parse("2006-01-02", date)
+			return t
+		}
+		data = [][]interface{}{
+			{21196, "Keep On Truckin'", pt("1999-05-17"), "ahote glowtusks", 9.75},
+			{-1162, "Cry Wolf", pt("2007-10-16"), "adahy windshot", 4.22},
+			{-1248, "Needle In a Haystack", pt("1988-09-06"), "shikpa longmoon", 0.7},
+			{50994, "Greased Lightning", pt("1989-06-04"), "helushka emberhair", 2.72},
+			{80640, "Let Her Rip", pt("1981-01-13"), "geashkoo grassdream", 1.6},
+			{50997, "Up In Arms", pt("1981-01-13"), "oonnak hardrage", 0.58},
+		}
+	)
+
+	n := NewNode()
+	// These 3 rows are under n
+	n.Push(data[0]...)
+	n.Push(data[1]...)
+	m, _ := n.Push(data[2]...)
+
+	// These 3 rows are under m
+	m.Push(data[3]...)
+	m.Push(data[4]...)
+	m.Push(data[5]...)
+
+	// Sort n affects only data 0, 1, 2. So you can sort differently per node level.
+	n.Sort(0)
+	m.Sort(0, WithDescending())
+
+	Print(n)
+
+	fmt.Println("===")
+
+	// Or recursively sort by Walk()
+	n.Sort(1)
+	n.Walk(func(c *Node) {
+		c.Sort(1)
+	})
+
+	Print(n)
+	// Output:
+	// -1248 Needle In a Haystack 1988-09-06 00:00:00 +0000 UTC     shikpa longmoon  0.7
+	// 80640          Let Her Rip 1981-01-13 00:00:00 +0000 UTC geashkoo grassdream  1.6
+	// 50997           Up In Arms 1981-01-13 00:00:00 +0000 UTC     oonnak hardrage 0.58
+	// 50994    Greased Lightning 1989-06-04 00:00:00 +0000 UTC  helushka emberhair 2.72
+	// -1162             Cry Wolf 2007-10-16 00:00:00 +0000 UTC      adahy windshot 4.22
+	// 21196     Keep On Truckin' 1999-05-17 00:00:00 +0000 UTC     ahote glowtusks 9.75
+	// ===
+	// -1162             Cry Wolf 2007-10-16 00:00:00 +0000 UTC      adahy windshot 4.22
+	// 21196     Keep On Truckin' 1999-05-17 00:00:00 +0000 UTC     ahote glowtusks 9.75
+	// -1248 Needle In a Haystack 1988-09-06 00:00:00 +0000 UTC     shikpa longmoon  0.7
+	// 50994    Greased Lightning 1989-06-04 00:00:00 +0000 UTC  helushka emberhair 2.72
+	// 80640          Let Her Rip 1981-01-13 00:00:00 +0000 UTC geashkoo grassdream  1.6
+	// 50997           Up In Arms 1981-01-13 00:00:00 +0000 UTC     oonnak hardrage 0.58
 }
